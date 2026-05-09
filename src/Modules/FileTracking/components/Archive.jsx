@@ -31,7 +31,7 @@ import {
   MagnifyingGlass,
   ArrowClockwise,
   FileText,
-  FolderNotch,
+  Folder,
 } from "@phosphor-icons/react";
 import axios from "axios";
 import { useSelector } from "react-redux";
@@ -39,8 +39,8 @@ import { useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import View from "./ViewFile";
 import {
-  getArchiveRoute,
-  unArchiveRoute,
+  newArchiveListRoute,
+  newUnarchiveRoute,
 } from "../../../routes/filetrackingRoutes";
 
 export default function ArchiveFiles() {
@@ -73,16 +73,10 @@ export default function ArchiveFiles() {
     const getFiles = async () => {
       setLoading(true);
       try {
-        const response = await axios.get(`${getArchiveRoute}`, {
-          params: {
-            username,
-            designation: role,
-            src_module: current_module,
-          },
+        const response = await axios.get(`${newArchiveListRoute}`, {
           withCredentials: true,
           headers: {
             Authorization: `Token ${token}`,
-            "Content-Type": "multipart/form-data",
           },
         });
         setFiles(response.data);
@@ -118,16 +112,19 @@ export default function ArchiveFiles() {
 
   // Helper function to generate file ID
   const generateFileId = (file) => {
-    return `${file.branch}-${new Date(file.upload_date).getFullYear()}-${(new Date(file.upload_date).getMonth() + 1).toString().padStart(2, "0")}-#${file.id}`;
+    if (file?.file_number) return file.file_number;
+    const dt = new Date(file.upload_date || file.created_at);
+    if (Number.isNaN(dt.getTime())) return `FTS-#${file?.id || ""}`;
+    return `${file.branch || "FTS"}-${dt.getFullYear()}-${(dt.getMonth() + 1).toString().padStart(2, "0")}-#${file.id}`;
   };
 
   const filteredFiles = sortedFiles.filter((file) => {
     const idString = generateFileId(file);
     return (
       idString.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.uploader.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      convertDate(file.upload_date)
+      (file.uploader || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (file.subject || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      convertDate(file.upload_date || file.created_at)
         .toLowerCase()
         .includes(searchQuery.toLowerCase())
     );
@@ -146,24 +143,15 @@ export default function ArchiveFiles() {
   const handleToggleArchive = async (fileID) => {
     setUnarchiveLoading(true);
     try {
-      await axios.post(
-        `${unArchiveRoute}`,
-        {
-          file_id: fileID,
+      await axios.post(newUnarchiveRoute(fileID), {
+        remarks: "Unarchived from archive section",
+      }, {
+        withCredentials: true,
+        headers: {
+          Authorization: `Token ${localStorage.getItem("authToken")}`,
+          "Content-Type": "application/json",
         },
-        {
-          params: {
-            username,
-            designation: role,
-            src_module: current_module,
-          },
-          withCredentials: true,
-          headers: {
-            Authorization: `Token ${localStorage.getItem("authToken")}`,
-            "Content-Type": "application/json",
-          },
-        },
-      );
+      });
       const updatedFiles = files.filter((file) => file.id !== fileID);
       setFiles(updatedFiles);
 
@@ -224,7 +212,7 @@ export default function ArchiveFiles() {
       return (
         <Center style={{ height: "200px" }}>
           <Stack align="center" spacing="xs">
-            <FolderNotch size={48} color={theme.colors.gray[5]} />
+            <Folder size={48} color={theme.colors.gray[5]} />
             <Text c="dimmed" size="lg">
               No archived files found!
             </Text>
@@ -282,7 +270,7 @@ export default function ArchiveFiles() {
                   {file.uploader}
                 </Text>
                 <Text size="sm" color="dimmed">
-                  {convertDate(file.upload_date)}
+                  {convertDate(file.upload_date || file.created_at)}
                 </Text>
               </Group>
 
@@ -336,7 +324,7 @@ export default function ArchiveFiles() {
       return (
         <Center style={{ height: "200px" }}>
           <Stack align="center" spacing="xs">
-            <FolderNotch size={48} color={theme.colors.gray[5]} />
+            <Folder size={48} color={theme.colors.gray[5]} />
             <Text color="dimmed" size="lg">
               No archived files found
             </Text>
@@ -428,7 +416,7 @@ export default function ArchiveFiles() {
                   </td>
                   <td style={tableStyles}>{generateFileId(file)}</td>
                   <td style={tableStyles}>{file.subject}</td>
-                  <td style={tableStyles}>{convertDate(file.upload_date)}</td>
+                  <td style={tableStyles}>{convertDate(file.upload_date || file.created_at)}</td>
                   <td style={tableStyles}>
                     {file.uploader}[{file.uploader_designation}]
                   </td>
@@ -475,12 +463,12 @@ export default function ArchiveFiles() {
       withBorder
       style={{
         backgroundColor: "#F5F7F8",
-        position: "absolute",
-        height: "65vh",
-        width: "90vw",
+        width: "100%",
+        minHeight: "65vh",
+        maxHeight: "70vh",
         display: "flex",
         flexDirection: "column",
-        overflowY: "auto",
+        overflowY: selectedFile ? "hidden" : "auto",
       }}
     >
       {!selectedFile ? (
@@ -522,7 +510,7 @@ export default function ArchiveFiles() {
               border: "1px solid #ddd",
               borderRadius: "8px",
               overflowY: "auto",
-              height: "calc(53vh - 20px)",
+              height: "100%",
               minHeight: "300px",
               backgroundColor: "#fff",
               display: "flex",
@@ -584,7 +572,7 @@ export default function ArchiveFiles() {
                       onChange={(e) => {
                         setPageInput(e.target.value.replace(/[^0-9]/g, ""));
                       }}
-                      onKeyPress={handlePageJump}
+                      onKeyDown={handlePageJump}
                       style={{
                         width: "80px",
                         textAlign: "center",

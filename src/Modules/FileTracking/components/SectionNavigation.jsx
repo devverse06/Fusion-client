@@ -2,27 +2,49 @@ import React, { useState } from "react";
 import { Group, Text, Box, Container } from "@mantine/core";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 // eslint-disable-next-line import/no-unresolved
-import { useDispatch } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import Compose from "./ComposeFile";
+import CreatedFiles from "./CreatedFiles";
 import Outboxfunc from "./Outbox";
 import Inboxfunc from "./Inbox";
 import Draft from "./Drafts";
 import ArchiveFiles from "./Archive";
+import AdminManagement from "./AdminManagement";
 import { setActiveTab_ } from "../../../redux/moduleslice";
 import classes from "../../Dashboard/Dashboard.module.css";
 
-const sections = ["Compose File", "Drafts", "Inbox", "Outbox", "Archive"];
-
 const sectionComponents = {
   "Compose File": Compose,
-  Outbox: Outboxfunc,
-  Inbox: Inboxfunc,
   Drafts: Draft,
+  "Created Files": CreatedFiles,
+  Inbox: Inboxfunc,
+  Outbox: Outboxfunc,
   Archive: ArchiveFiles,
+  "Admin Console": AdminManagement,
 };
 
 export default function SectionNavigation() {
   const dispatch = useDispatch();
+  const roles = useSelector((state) => state.user.roles) || [];
+  const role = (useSelector((state) => state.user.role) || "").toLowerCase();
+
+  const hasAdminAccess =
+    role.includes("admin") ||
+    role.includes("dean") ||
+    role.includes("director") ||
+    roles.some((r) => {
+      const name = (r || "").toLowerCase();
+      return (
+        name.includes("admin") ||
+        name.includes("dean") ||
+        name.includes("director")
+      );
+    });
+
+  const sections = hasAdminAccess
+    ? ["Compose File", "Drafts", "Created Files", "Inbox", "Outbox", "Archive", "Admin Console"]
+    : ["Compose File", "Drafts", "Created Files", "Inbox", "Outbox", "Archive"];
+
   const [activeSection, setActiveSection] = useState("Compose File");
 
   const handleSelection = (section) => {

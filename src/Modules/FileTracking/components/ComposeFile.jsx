@@ -27,11 +27,12 @@ import { useSelector } from "react-redux";
 import axios from "axios";
 import { ChatCenteredText } from "phosphor-react";
 import {
-  designationsRoute,
-  createFileRoute,
   getUsernameRoute,
-  createDraftRoute,
+  newFilesRoute,
+  newDraftsRoute,
+  newFileTypesRoute,
 } from "../../../routes/filetrackingRoutes";
+import { getApiErrorMessage } from "../utils/apiErrors";
 
 axios.defaults.withCredentials = true;
 
@@ -40,13 +41,16 @@ export default function Compose() {
   const [usernameSuggestions, setUsernameSuggestions] = React.useState([]);
   const username = useSelector((state) => state.user.roll_no);
   const [receiver_username, setReceiverUsername] = React.useState("");
-  const [receiver_designation, setReceiverDesignation] = React.useState("");
-  const [receiver_designations, setReceiverDesignations] = React.useState("");
   const [subject, setSubject] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [remarks, setRemarks] = React.useState("");
+  const [fileTypeId, setFileTypeId] = React.useState("");
+  const [priority, setPriority] = React.useState("NORMAL");
+  const [fileTypes, setFileTypes] = React.useState([]);
   const token = localStorage.getItem("authToken");
   const [showConfirmModal, setShowConfirmModal] = React.useState(false);
+  const [isSavingDraft, setIsSavingDraft] = React.useState(false);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const roles = useSelector((state) => state.user.roles);
   let module = useSelector((state) => state.module.current_module);
@@ -56,37 +60,98 @@ export default function Compose() {
   const options = Array.isArray(roles)
     ? roles.map((role) => ({ value: role, label: role }))
     : [];
-  const receiverRoles = Array.isArray(receiver_designations)
-    ? receiver_designations.map((role) => ({
-        value: role,
-        label: role,
-      }))
-    : [];
+  const validateAttachments = (uploadedFiles) => {
+    if (!uploadedFiles) {
+      return { valid: [], invalidMessages: [] };
+    }
+
+    const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
+    const maxSizeBytes = 10 * 1024 * 1024;
+    const fileArray = Array.isArray(uploadedFiles) ? uploadedFiles : [uploadedFiles];
+    const valid = [];
+    const invalidMessages = [];
+
+    fileArray.forEach((file) => {
+      const fileName = file?.name || "file";
+      const dotIndex = fileName.lastIndexOf(".");
+      const ext = dotIndex >= 0 ? fileName.substring(dotIndex).toLowerCase() : "";
+
+      if (!allowedExtensions.includes(ext)) {
+        invalidMessages.push(`Unsupported attachment type: ${fileName}. Allowed: PDF, JPG, JPEG, PNG`);
+        return;
+      }
+
+      if ((file?.size || 0) > maxSizeBytes) {
+        invalidMessages.push(`Attachment too large: ${fileName}. Max size is 10MB`);
+        return;
+      }
+
+      valid.push(file);
+    });
+
+    return { valid, invalidMessages };
+  };
 
   const handleFileChange = (uploadedFiles) => {
-    if (Array.isArray(uploadedFiles)) {
-      setFiles(uploadedFiles);
-    } else if (uploadedFiles) {
-      setFiles([uploadedFiles]);
-    } else {
+    const { valid, invalidMessages } = validateAttachments(uploadedFiles);
+
+    invalidMessages.forEach((message) => {
+      notifications.show({
+        title: "Invalid file",
+        message,
+        color: "red",
+        position: "top-center",
+      });
+    });
+
+    if (!uploadedFiles) {
       setFiles([]);
+      return;
     }
+
+    setFiles((prevFiles) => {
+      const existing = Array.isArray(prevFiles) ? prevFiles : [];
+      const existingNames = new Set(existing.map((f) => (f?.name || "").toLowerCase()));
+      const dedupedToAdd = [];
+
+      valid.forEach((file) => {
+        const normalizedName = (file?.name || "").toLowerCase();
+        if (!normalizedName) {
+          return;
+        }
+
+        if (existingNames.has(normalizedName)) {
+          notifications.show({
+            title: "Duplicate file name",
+            message: `A file named ${file.name} is already attached.`,
+            color: "red",
+            position: "top-center",
+          });
+          return;
+        }
+
+        existingNames.add(normalizedName);
+        dedupedToAdd.push(file);
+      });
+
+      return [...existing, ...dedupedToAdd];
+    });
   };
   const removeFile = () => {
     setFiles([]);
   };
   const postSubmit = () => {
     setFiles([]);
+    setFileTypeId("");
+    setPriority("NORMAL");
     setDesignation("");
-    setReceiverDesignation("");
-    setReceiverDesignations("");
     setReceiverUsername("");
     setSubject("");
     setDescription("");
     setRemarks("");
   };
   useEffect(() => {
-    setDesignation(roles);
+    setDesignation(roles && Array.isArray(roles) && roles.length > 0 ? roles[0] : '');
   }, [roles]);
 
   useEffect(() => {
@@ -121,47 +186,75 @@ export default function Compose() {
     };
   }, [receiver_username, token]);
 
-  const fetchRoles = async () => {
-    try {
-      const response = await axios.get(
-        `${designationsRoute}${receiver_username}`,
-        {
+  useEffect(() => {
+    const fetchFileTypes = async () => {
+      try {
+        const response = await axios.get(`${newFileTypesRoute}`, {
           headers: {
             Authorization: `Token ${token}`,
           },
-        },
-      );
-      console.log(response);
-      setReceiverDesignations(response.data.designations);
-    } catch (err) {
-      if (err.response && err.response.status === 500) {
-        console.warn("Retrying fetchRoles in 2 seconds...");
-        setTimeout(fetchRoles, 2000);
+        });
+        setFileTypes(response.data);
+      } catch (err) {
+        console.error("Error fetching file types:", err);
+        notifications.show({
+          title: "Could not load file types",
+          message: getApiErrorMessage(err, "Please refresh and try again."),
+          color: "red",
+          position: "top-center",
+        });
       }
-    }
-  };
-  useEffect(() => {
-    setReceiverDesignation("");
-    setReceiverDesignations("");
-  }, [receiver_username]);
+    };
+
+    fetchFileTypes();
+  }, [token]);
+
   const handleSaveDraft = async () => {
+    if (isSavingDraft) return;
+
+    if (!fileTypeId || !subject) {
+      notifications.show({
+        title: "Draft save failed",
+        message: "Please choose file type and subject at minimum.",
+        color: "red",
+        position: "top-center",
+      });
+      return;
+    }
+
+    if (!remarks || remarks.trim().length < 5) {
+      notifications.show({
+        title: "Draft save failed",
+        message: "Please enter a mandatory comment (minimum 5 characters).",
+        color: "red",
+        position: "top-center",
+      });
+      return;
+    }
+
     try {
+      setIsSavingDraft(true);
       const formData = new FormData();
-      formData.append("designation", uploaderRole);
-      formData.append("src_module", module);
+      formData.append("file_type_id", String(fileTypeId));
       formData.append("subject", subject);
       formData.append("description", description);
       formData.append("remarks", remarks);
-      formData.append("receiver_username", receiver_username);
-      formData.append("receiver_designation", receiver_designation);
-      files.forEach((file) => {
-        formData.append("files", file);
-      });
-      await axios.post(`${createDraftRoute}`, formData, {
-        headers: {
-          Authorization: `Token ${token}`,
+      formData.append("priority", priority);
+      if (Array.isArray(files) && files.length > 0) {
+        files.forEach((fileItem) => formData.append("files", fileItem));
+      }
+
+      await axios.post(
+        `${newDraftsRoute}`,
+        formData,
+        {
+          headers: {
+            Authorization: `Token ${token}`,
+            "Content-Type": "multipart/form-data",
+          },
         },
-      });
+      );
+
       notifications.show({
         title: "Draft saved successfully",
         message: "The draft has been saved successfully.",
@@ -171,20 +264,32 @@ export default function Compose() {
       postSubmit();
     } catch (err) {
       console.log(err);
+      notifications.show({
+        title: "Draft save error",
+        message: getApiErrorMessage(err, "Could not save draft. Please try again."),
+        color: "red",
+        position: "top-center",
+      });
+    } finally {
+      setIsSavingDraft(false);
     }
   };
 
   const handleCreateFile = () => {
-    if (
-      files.length === 0 ||
-      !subject ||
-      !description ||
-      !receiver_username ||
-      !receiver_designation
-    ) {
+    if (!subject || !description || !fileTypeId) {
       notifications.show({
         title: "Incomplete Form",
-        message: "Please fill out all required fields before submitting.",
+        message: "Please select file type, subject, and description before submitting.",
+        color: "red",
+        position: "top-center",
+      });
+      return;
+    }
+
+    if (!remarks || remarks.trim().length < 5) {
+      notifications.show({
+        title: "Incomplete Form",
+        message: "Please enter a mandatory comment (minimum 5 characters).",
         color: "red",
         position: "top-center",
       });
@@ -195,43 +300,62 @@ export default function Compose() {
   };
 
   const finalSubmit = async () => {
+    if (isSubmitting) return;
+
     setShowConfirmModal(false);
+    if (!fileTypeId || !subject) {
+      notifications.show({
+        title: "Submit failed",
+        message: "Please select file type and enter subject before submit.",
+        color: "red",
+        position: "top-center",
+      });
+      return;
+    }
+
     try {
+      setIsSubmitting(true);
       const formData = new FormData();
-      if (Array.isArray(files) && files.length > 0) {
-        files.forEach((fileItem, index) => {
-          const fileAttachment =
-            fileItem instanceof File
-              ? fileItem
-              : new File([fileItem], `uploaded_file_${index}`, {
-                  type: "application/octet-stream",
-                });
-          formData.append("files", fileAttachment);
-        });
-      }
+      formData.append("file_type_id", String(fileTypeId));
       formData.append("subject", subject);
       formData.append("description", description);
-      formData.append("designation", designation);
-      formData.append("receiver_username", receiver_username);
-      formData.append("receiver_designation", receiver_designation);
-      formData.append("src_module", module);
+      formData.append("priority", priority);
       formData.append("remarks", remarks);
-      const response = await axios.post(`${createFileRoute}`, formData, {
-        headers: {
-          Authorization: `Token ${token}`,
-        },
+      formData.append("action", "create");
+      files.forEach((file) => {
+        formData.append("files", file);
       });
+
+      const response = await axios.post(
+        `${newFilesRoute}`,
+        formData,
+        {
+          headers: {
+            Authorization: `Token ${token}`,
+            "Content-Type": "multipart/form-data",
+          },
+        },
+      );
+
       if (response.status === 201) {
         notifications.show({
-          title: "File sent successfully",
-          message: "The file has been sent successfully.",
+          title: "File created successfully",
+          message: `File created: ${response.data.file_number}`,
           color: "green",
           position: "top-center",
         });
         postSubmit();
       }
     } catch (err) {
-      console.log(err);
+      console.error(err);
+      notifications.show({
+        title: "File creation error",
+        message: getApiErrorMessage(err, "Could not create file. Please try again."),
+        color: "red",
+        position: "top-center",
+      });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -244,26 +368,29 @@ export default function Compose() {
       className="inbox-card"
       style={{
         backgroundColor: "#F5F7F8",
-        position: "absolute",
-        height: "70vh",
-        width: "90vw",
+        width: "100%",
+        minHeight: "70vh",
+        maxHeight: "70vh",
         overflowY: "auto",
       }}
     >
       <Box
         style={{
-          position: "absolute",
-          top: "16px",
-          right: "16px",
+          position: "sticky",
+          top: 0,
+          zIndex: 2,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
+          marginLeft: "auto",
+          width: "fit-content",
         }}
       >
         <ActionIcon
           size="lg"
           variant="outline"
           color="blue"
+          disabled={isSavingDraft || isSubmitting}
           onClick={() => handleSaveDraft()}
           title="Save as Draft"
         >
@@ -319,6 +446,31 @@ export default function Compose() {
           {description.length} / 2500 letters
         </Text>
 
+        <Select
+          label="File Type"
+          placeholder="Select file type"
+          value={fileTypeId}
+          data={fileTypes.map((type) => ({ value: String(type.id), label: type.name }))}
+          onChange={(value) => setFileTypeId(value || "")}
+          searchable
+          nothingFoundMessage="No file types found"
+          mb="sm"
+        />
+
+        <Select
+          label="Priority"
+          placeholder="Select priority"
+          value={priority}
+          data={[
+            { value: "LOW", label: "Low" },
+            { value: "NORMAL", label: "Normal" },
+            { value: "HIGH", label: "High" },
+            { value: "URGENT", label: "Urgent" },
+          ]}
+          onChange={(value) => setPriority(value)}
+          mb="sm"
+        />
+
         <Textarea
           label="Remarks"
           placeholder="Enter remarks (500 characters maximum)"
@@ -357,12 +509,11 @@ export default function Compose() {
           onChange={handleFileChange}
           mb="sm"
           multiple
-          maxSize={10 * 1024 * 1024}
         />
-        {files && (
+        {Array.isArray(files) && files.length > 0 && (
           <Group position="apart" mt="sm">
             <Button
-              leftIcon={<Trash size={16} />}
+              leftSection={<Trash size={16} />}
               color="red"
               onClick={removeFile}
               compact
@@ -371,59 +522,10 @@ export default function Compose() {
             </Button>
           </Group>
         )}
-        <Grid mb="sm" gutter="auto" align="flex-start">
-          <Grid.Col span={{ base: 12, sm: 6, md: 6 }}>
-            <Box style={{ height: "100%", width: "98.5%", marginLeft: "8px" }}>
-              <Autocomplete
-                label="Send To"
-                placeholder="Enter recipient"
-                value={receiver_username}
-                data={usernameSuggestions}
-                onChange={(value) => {
-                  setReceiverUsername(value); // update username
-                  setReceiverDesignation(""); // reset designation
-                  setReceiverDesignations("");
-                }}
-                styles={(theme) => ({
-                  label: {
-                    marginBottom: theme.spacing.xs,
-                  },
-                  input: {
-                    height: 36,
-                  },
-                })}
-              />
-            </Box>
-          </Grid.Col>
-
-          <Grid.Col span={{ base: 12, sm: 6 }}>
-            <Box style={{ height: "100%", width: "99%" }}>
-              <Select
-                key={receiver_username}
-                label="Receiver Designation"
-                placeholder="Select designation"
-                value={receiver_designation}
-                data={receiverRoles}
-                onChange={(value) => setReceiverDesignation(value)}
-                onClick={() => fetchRoles()}
-                searchable
-                nothingFound="No designations found"
-                styles={(theme) => ({
-                  label: {
-                    marginBottom: theme.spacing.xs,
-                  },
-                  input: {
-                    height: 36,
-                  },
-                })}
-              />
-            </Box>
-          </Grid.Col>
-        </Grid>
-
         <Button
           type="submit"
           color="blue"
+          disabled={isSavingDraft || isSubmitting}
           style={{
             display: "block",
             margin: "0 auto",
@@ -431,7 +533,7 @@ export default function Compose() {
           }}
           onClick={handleCreateFile}
         >
-          Submit
+          {isSubmitting ? "Creating..." : "Create File"}
         </Button>
       </Box>
 
@@ -440,7 +542,7 @@ export default function Compose() {
         onClose={() => setShowConfirmModal(false)}
         title={
           <Text align="center" weight={600} size="lg">
-            Confirm Submission
+            Confirm File Creation
           </Text>
         }
         centered
@@ -448,7 +550,7 @@ export default function Compose() {
       >
         <Paper p="md" withBorder mb="md">
           <Text weight={600} mb="md" size="md">
-            Do you want to send this file?
+            Do you want to create this file and keep it in Created Files?
           </Text>
 
           <Grid>
@@ -460,15 +562,6 @@ export default function Compose() {
                 {username} [{designation}]
               </Text>
             </Grid.Col>
-
-            <Grid.Col span={5}>
-              <Text weight={500}>Receiver:</Text>
-            </Grid.Col>
-            <Grid.Col span={7}>
-              <Text>
-                {receiver_username} [{receiver_designation}]
-              </Text>
-            </Grid.Col>
           </Grid>
         </Paper>
 
@@ -476,9 +569,11 @@ export default function Compose() {
           <Button
             onClick={finalSubmit}
             color="blue"
+            loading={isSubmitting}
+            disabled={isSavingDraft}
             style={{ width: "120px" }}
             radius="md"
-            leftIcon={<PaperPlaneTilt size={16} />}
+            leftSection={<PaperPlaneTilt size={16} />}
           >
             Confirm
           </Button>

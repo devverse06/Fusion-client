@@ -33,9 +33,8 @@ import axios from "axios";
 import { useSelector } from "react-redux";
 import EditDraft from "./EditDraft";
 import {
-  createArchiveRoute,
-  createFileRoute,
-  getDraftRoute,
+  newDeleteDraftRoute,
+  newDraftsRoute,
 } from "../../../routes/filetrackingRoutes";
 
 export default function Draft() {
@@ -52,10 +51,6 @@ export default function Draft() {
   // Media query for responsive design
   const isMobile = useMediaQuery(`(max-width: ${theme.breakpoints.sm})`);
 
-  // New state for archive confirmation modal
-  const [showArchiveModal, setShowArchiveModal] = useState(false);
-  const [selectedArchiveFile, setSelectedArchiveFile] = useState(null);
-
   const token = localStorage.getItem("authToken");
   const role = useSelector((state) => state.user.role);
   const username = useSelector((state) => state.user.roll_no);
@@ -65,7 +60,7 @@ export default function Draft() {
   useEffect(() => {
     const getFiles = async () => {
       try {
-        const response = await axios.get(`${getDraftRoute}`, {
+        const response = await axios.get(`${newDraftsRoute}`, {
           params: {
             username,
             designation: role,
@@ -89,49 +84,34 @@ export default function Draft() {
 
   const [editFile, setEditFile] = useState(null); // File being edited
 
-  const handleArchive = async (fileID) => {
-    try {
-      await axios.post(
-        `${createArchiveRoute}`,
-        { file_id: fileID },
-        {
-          params: {
-            username,
-            designation: role,
-            src_module: current_module,
-          },
-          withCredentials: true,
-          headers: {
-            Authorization: `Token ${token}`,
-            "Content-Type": "multipart/form-data",
-          },
-        },
-      );
-      const updatedFiles = files.filter((file) => file.id !== fileID);
-      setFiles(updatedFiles);
-      notifications.show({
-        title: "File archived",
-        message: "The file has been successfully archived",
-        color: "green",
-      });
-    } catch (err) {
-      console.error("Error archiving file:", err);
-    }
+  const getDraftField = (file, key) => {
+    if (!file) return "";
+    const extra = file.draft_data || file.file_extra_JSON || {};
+    return (extra[key] || file[key] || "").toString();
   };
 
   const handleDeleteFile = async (fileID) => {
-    await axios.delete(`${createFileRoute}${fileID}`, {
-      withCredentials: true,
-      headers: {
-        Authorization: `Token ${token}`,
-      },
-    });
-    setFiles((prevFiles) => prevFiles.filter((file) => file.id !== fileID));
-    notifications.show({
-      title: "File deleted",
-      message: "The file has been successfully deleted",
-      color: "red",
-    });
+    try {
+      await axios.delete(`${newDeleteDraftRoute(fileID)}?confirm=true`, {
+        withCredentials: true,
+        headers: {
+          Authorization: `Token ${token}`,
+        },
+      });
+      setFiles((prevFiles) => prevFiles.filter((file) => file.id !== fileID));
+      notifications.show({
+        title: "Draft deleted",
+        message: "The draft has been successfully deleted",
+        color: "red",
+      });
+    } catch (err) {
+      console.error("Error deleting draft:", err);
+      notifications.show({
+        title: "Delete failed",
+        message: err?.response?.data?.error || "Could not delete draft. Please try again.",
+        color: "red",
+      });
+    }
   };
 
   const sortedFiles = [...files].sort((a, b) => {
@@ -143,45 +123,44 @@ export default function Draft() {
     }
 
     if (sortConfig.key === "subject") {
-      return (
-        direction *
-        a.file_extra_JSON.subject.localeCompare(b.file_extra_JSON.subject)
-      );
+      const aSubject = (a?.file_extra_JSON?.subject || a?.subject || "").toString();
+      const bSubject = (b?.file_extra_JSON?.subject || b?.subject || "").toString();
+      return direction * aSubject.localeCompare(bSubject);
     }
 
     if (sortConfig.key === "description") {
-      return (
-        direction *
-        a.file_extra_JSON.description.localeCompare(
-          b.file_extra_JSON.description,
-        )
-      );
+      const aDescription = (a?.file_extra_JSON?.description || a?.description || "").toString();
+      const bDescription = (b?.file_extra_JSON?.description || b?.description || "").toString();
+      return direction * aDescription.localeCompare(bDescription);
     }
 
     if (sortConfig.key === "remarks") {
-      return (
-        direction *
-        a.file_extra_JSON.remarks.localeCompare(b.file_extra_JSON.remarks)
-      );
+      const aRemarks = (a?.file_extra_JSON?.remarks || a?.remarks || "").toString();
+      const bRemarks = (b?.file_extra_JSON?.remarks || b?.remarks || "").toString();
+      return direction * aRemarks.localeCompare(bRemarks);
     }
 
     return direction * (a[sortConfig.key] > b[sortConfig.key] ? 1 : -1);
   });
 
   const filteredFiles = sortedFiles.filter((file) => {
-    const idString = `${file.branch}-${new Date(file.upload_date).getFullYear()}-${(new Date(file.upload_date).getMonth() + 1).toString().padStart(2, "0")}-#${file.id}`;
+    const fileDate = file?.upload_date || file?.created_at;
+    const parsedDate = fileDate ? new Date(fileDate) : null;
+    const idString = file?.file_number
+      ? file.file_number
+      : parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? `${file.branch || "FTS"}-${parsedDate.getFullYear()}-${(parsedDate.getMonth() + 1).toString().padStart(2, "0")}-#${file.id}`
+        : `FTS-#${file?.id || ""}`;
+    const subject = getDraftField(file, "subject").toLowerCase();
+    const description = getDraftField(file, "description").toLowerCase();
+    const remarks = getDraftField(file, "remarks").toLowerCase();
+    const uploader = (file?.uploader || file?.created_by || "").toLowerCase();
     return (
       idString.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.file_extra_JSON.subject
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase()) ||
-      file.uploader.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.file_extra_JSON.description
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase()) ||
-      file.file_extra_JSON.remarks
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase())
+      subject.includes(searchQuery.toLowerCase()) ||
+      uploader.includes(searchQuery.toLowerCase()) ||
+      description.includes(searchQuery.toLowerCase()) ||
+      remarks.includes(searchQuery.toLowerCase())
     );
   });
 
@@ -212,20 +191,6 @@ export default function Draft() {
 
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = Math.min(startIndex + itemsPerPage, filteredFiles.length);
-
-  // Archive modal functions
-  // const openArchiveModal = (file) => {
-  //   setSelectedArchiveFile(file);
-  //   setShowArchiveModal(true);
-  // };
-
-  const confirmArchive = () => {
-    if (selectedArchiveFile) {
-      handleArchive(selectedArchiveFile.id);
-      setShowArchiveModal(false);
-      setSelectedArchiveFile(null);
-    }
-  };
 
   // Delete modal functions
   const openDeleteModal = (file) => {
@@ -265,7 +230,7 @@ export default function Draft() {
               style={{ position: "relative" }}
             >
               <Text weight={600} size="md" mb={6}>
-                {file.file_extra_JSON.subject}
+                {getDraftField(file, "subject") || "-"}
               </Text>
 
               <Divider my="xs" />
@@ -274,14 +239,14 @@ export default function Draft() {
                 <Text span weight={500}>
                   Description:
                 </Text>{" "}
-                {file.file_extra_JSON.description}
+                {getDraftField(file, "description") || "-"}
               </Text>
 
               <Text size="sm" mb={8}>
                 <Text span weight={500}>
                   Remarks:
                 </Text>{" "}
-                {file.file_extra_JSON.remarks}
+                {getDraftField(file, "remarks") || "-"}
               </Text>
 
               <Group position="apart" mt="xs">
@@ -295,7 +260,7 @@ export default function Draft() {
                   {file.uploader_designation}
                 </Text>
                 <Text size="sm" color="dimmed">
-                  {new Date(file.upload_date).toLocaleString()}
+                  {new Date(file.upload_date || file.created_at).toLocaleString()}
                 </Text>
               </Group>
 
@@ -423,7 +388,7 @@ export default function Draft() {
                       height: "36px",
                     }}
                   >
-                    {file.file_extra_JSON.subject}
+                    {getDraftField(file, "subject") || "-"}
                   </td>
                   <td
                     style={{
@@ -433,7 +398,7 @@ export default function Draft() {
                       height: "36px",
                     }}
                   >
-                    {file.file_extra_JSON.description}
+                    {getDraftField(file, "description") || "-"}
                   </td>
                   <td
                     style={{
@@ -443,7 +408,7 @@ export default function Draft() {
                       height: "36px",
                     }}
                   >
-                    {file.file_extra_JSON.remarks}
+                    {getDraftField(file, "remarks") || "-"}
                   </td>
                   <td
                     style={{
@@ -453,7 +418,7 @@ export default function Draft() {
                       height: "36px",
                     }}
                   >
-                    {new Date(file.upload_date).toLocaleString()}
+                    {new Date(file.upload_date || file.created_at).toLocaleString()}
                   </td>
                   <td
                     style={{
@@ -463,7 +428,7 @@ export default function Draft() {
                       height: "36px",
                     }}
                   >
-                    {file.uploader}
+                    {file.uploader || file.created_by || "-"}
                   </td>
                   <td
                     style={{
@@ -540,9 +505,9 @@ export default function Draft() {
         withBorder
         style={{
           backgroundColor: "#F5F7F8",
-          position: "absolute",
-          height: "70vh",
-          width: "90vw",
+          width: "100%",
+          minHeight: "70vh",
+          maxHeight: "70vh",
           display: "flex",
           flexDirection: "column",
           overflowY: "auto",
@@ -591,7 +556,7 @@ export default function Draft() {
               border: "1px solid #ddd",
               borderRadius: "8px",
               overflowY: "auto",
-              height: "calc(57vh - 20px)",
+              height: "100%",
               minHeight: "300px",
               backgroundColor: "#fff",
               display: "flex",
@@ -650,7 +615,7 @@ export default function Draft() {
                     onChange={(e) => {
                       setPageInput(e.target.value.replace(/[^0-9]/g, ""));
                     }}
-                    onKeyPress={handlePageJump}
+                    onKeyDown={handlePageJump}
                     style={{
                       width: "80px",
                       textAlign: "center",
@@ -678,47 +643,6 @@ export default function Draft() {
         )}
       </Card>
 
-      {/* Archive Confirmation Modal */}
-      <Modal
-        opened={showArchiveModal}
-        onClose={() => setShowArchiveModal(false)}
-        title={
-          <Text align="center" weight={600} size="lg">
-            Confirm Archive
-          </Text>
-        }
-        centered
-        size={isMobile ? "xs" : "md"}
-      >
-        <Text weight={600} mb="ls">
-          Are you sure you want to archive this file?
-        </Text>
-        {selectedArchiveFile && (
-          <>
-            <Text mb="ls">
-              Subject: {selectedArchiveFile.file_extra_JSON?.subject}
-            </Text>
-            <Text mb="md">File ID: #{selectedArchiveFile.id}</Text>
-          </>
-        )}
-        <Group justify="center" gap="xl" style={{ width: "100%" }}>
-          <Button
-            onClick={confirmArchive}
-            color="blue"
-            style={{ width: isMobile ? "100px" : "120px" }}
-          >
-            Confirm
-          </Button>
-          <Button
-            onClick={() => setShowArchiveModal(false)}
-            variant="outline"
-            style={{ width: isMobile ? "100px" : "120px" }}
-          >
-            Cancel
-          </Button>
-        </Group>
-      </Modal>
-
       {/* Delete Confirmation Modal */}
       <Modal
         opened={showDeleteModal}
@@ -737,7 +661,7 @@ export default function Draft() {
         {selectedFile && (
           <>
             <Text mb="ls">
-              Subject: {selectedFile.file_extra_JSON?.subject}
+              Subject: {getDraftField(selectedFile, "subject") || "-"}
             </Text>
             <Text mb="md">File ID: #{selectedFile.id}</Text>
           </>

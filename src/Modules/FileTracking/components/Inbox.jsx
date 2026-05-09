@@ -31,12 +31,13 @@ import axios from "axios";
 import { useSelector } from "react-redux";
 import { notifications } from "@mantine/notifications";
 import { useMediaQuery } from "@mantine/hooks";
-import { ArrowClockwise, FolderNotch } from "phosphor-react";
+import { ArrowClockwise, Folder } from "@phosphor-icons/react";
 import View from "./ViewFile";
 import {
-  getFilesRoute,
-  createArchiveRoute,
+  newArchiveRoute,
 } from "../../../routes/filetrackingRoutes";
+import { listInbox } from "../api";
+import { getApiErrorMessage } from "../utils/apiErrors";
 
 export default function Inboxfunc() {
   const [files, setFiles] = useState([]);
@@ -44,6 +45,8 @@ export default function Inboxfunc() {
   const token = localStorage.getItem("authToken");
   const role = useSelector((state) => state.user.role);
   const username = useSelector((state) => state.user.roll_no);
+  const accountUsername = useSelector((state) => state.user.username);
+  const loginUsername = useSelector((state) => state.user.loginUsername);
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -66,30 +69,31 @@ export default function Inboxfunc() {
     return d.toLocaleString();
   };
 
-  // Helper function to generate file ID
+  // Helper function to generate file ID (new API file_number preferred)
   const generateFileId = (file) => {
-    return `${file.branch}-${new Date(file.upload_date).getFullYear()}-${(new Date(file.upload_date).getMonth() + 1).toString().padStart(2, "0")}-#${file.id}`;
+    if (file?.file_number) return file.file_number;
+    if (!file || !file.upload_date || !file.id) return "Loading...";
+    return `${file.branch || "FTS"}-${new Date(file.upload_date).getFullYear()}-${(
+      new Date(file.upload_date).getMonth() + 1
+    )
+      .toString()
+      .padStart(2, "0")}-#${file.id}`;
   };
 
   // Fetch files on component mount
   useEffect(() => {
     const getFiles = async () => {
       try {
-        const response = await axios.get(`${getFilesRoute}`, {
-          params: {
-            username,
-            designation: role,
-            src_module: current_module,
-          },
-          withCredentials: true,
-          headers: {
-            Authorization: `Token ${token}`,
-          },
-        });
-        console.log("Inbox: ", response.data);
-        setFiles(response.data);
+        const data = await listInbox(token);
+        console.log("Inbox: ", data);
+        setFiles(data);
       } catch (err) {
         console.error("Error fetching files:", err);
+        notifications.show({
+          title: "Could not load Inbox",
+          message: getApiErrorMessage(err, "Please refresh and try again."),
+          color: "red",
+        });
       }
     };
 
@@ -98,22 +102,15 @@ export default function Inboxfunc() {
 
   const handleArchive = async (fileID) => {
     try {
-      await axios.post(
-        `${createArchiveRoute}`,
-        { file_id: fileID },
-        {
-          params: {
-            username,
-            designation: role,
-            src_module: current_module,
-          },
-          withCredentials: true,
-          headers: {
-            Authorization: `Token ${token}`,
-            "Content-Type": "multipart/form-data",
-          },
+      await axios.post(newArchiveRoute(fileID), {
+        remarks: "Archived from inbox",
+      }, {
+        withCredentials: true,
+        headers: {
+          Authorization: `Token ${token}`,
+          "Content-Type": "application/json",
         },
-      );
+      });
       const updatedFiles = files.filter((file) => file.id !== fileID);
       setFiles(updatedFiles);
       notifications.show({
@@ -123,8 +120,33 @@ export default function Inboxfunc() {
       });
     } catch (err) {
       console.error("Error archiving file:", err);
+      notifications.show({
+        title: "Archive failed",
+        message:
+          err?.response?.data?.error ||
+          "Could not archive file. Ensure file is closed before archive.",
+        color: "red",
+      });
     }
   };
+
+  const canArchiveFile = (file) =>
+    isCurrentUser(file?.uploader || file?.created_by) && file?.status === "CLOSED";
+
+  const normalizeIdentifier = (value) => {
+    if (!value) return "";
+    return String(value).split("[")[0].trim().toLowerCase();
+  };
+
+  const userIdentitySet = new Set(
+    [
+      normalizeIdentifier(username),
+      normalizeIdentifier(accountUsername),
+      normalizeIdentifier(loginUsername),
+    ].filter(Boolean),
+  );
+
+  const isCurrentUser = (value) => userIdentitySet.has(normalizeIdentifier(value));
 
   const handleBack = () => {
     setSelectedFile(null);
@@ -137,16 +159,21 @@ export default function Inboxfunc() {
   });
 
   const filteredFiles = sortedFiles.filter((file) => {
-    const idString = generateFileId(file);
+    const idString = generateFileId(file).toLowerCase();
+    const createdBy = (file.created_by || "").toLowerCase();
+    const subjectValue = (file.subject || "").toLowerCase();
+    const descriptionValue = (file.description || "").toLowerCase();
+    const statusValue = (file.status || "").toLowerCase();
+
     return (
-      file.uploader.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.sent_by_user.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      idString.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      file.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      convertDate(file.upload_date)
+      idString.includes(searchQuery.toLowerCase()) ||
+      createdBy.includes(searchQuery.toLowerCase()) ||
+      subjectValue.includes(searchQuery.toLowerCase()) ||
+      descriptionValue.includes(searchQuery.toLowerCase()) ||
+      statusValue.includes(searchQuery.toLowerCase()) ||
+      convertDate(file.created_at || file.received_at || file.upload_date)
         .toLowerCase()
-        .includes(searchQuery.toLowerCase()) ||
-      file.sent_by_designation.toLowerCase().includes(searchQuery.toLowerCase())
+        .includes(searchQuery.toLowerCase())
     );
   });
 
@@ -208,7 +235,7 @@ export default function Inboxfunc() {
         {filteredFiles.length === 0 && (
           <Center style={{ height: "200px" }}>
             <Stack align="center" spacing="xs">
-              <FolderNotch size={48} color={theme.colors.gray[5]} />
+              <Folder size={48} color={theme.colors.gray[5]} />
               <Text c="dimmed" size="lg">
                 No files in Inbox!
               </Text>
@@ -254,10 +281,10 @@ export default function Inboxfunc() {
                     <Text span weight={500}>
                       From:
                     </Text>{" "}
-                    {file.sent_by_user}
+                    {file.sent_by_user || file.created_by || "-"}
                   </Text>
                   <Text size="sm" color="dimmed">
-                    {file.sent_by_designation}
+                    {file.sent_by_designation || file.current_designation || "-"}
                   </Text>
                 </Group>
 
@@ -268,10 +295,10 @@ export default function Inboxfunc() {
                     <Text span weight={500}>
                       Created by:
                     </Text>{" "}
-                    {file.uploader}
+                    {file.created_by || file.uploader || "-"}
                   </Text>
                   <Text size="sm" color="dimmed">
-                    {file.uploader_designation}
+                    {file.uploader_designation || file.current_designation || "-"}
                   </Text>
                   <Text size="sm" color="dimmed">
                     {convertDate(file.upload_date)}
@@ -291,14 +318,23 @@ export default function Inboxfunc() {
                     </Button>
                   </Tooltip>
 
-                  {file.uploader === username && (
-                    <Tooltip label="Archive file" position="top" withArrow>
+                  {isCurrentUser(file.uploader || file.created_by) && (
+                    <Tooltip
+                      label={
+                        canArchiveFile(file)
+                          ? "Archive file"
+                          : "Only file owner can archive closed files"
+                      }
+                      position="top"
+                      withArrow
+                    >
                       <Button
                         variant="light"
                         color="red"
                         size="xs"
                         leftIcon={<Archive size="1rem" />}
                         onClick={() => openArchiveModal(file)}
+                        disabled={!canArchiveFile(file)}
                       >
                         Archive
                       </Button>
@@ -395,7 +431,15 @@ export default function Inboxfunc() {
                         height: "36px",
                       }}
                     >
-                      <Tooltip label="Archive file" position="top" withArrow>
+                      <Tooltip
+                        label={
+                          canArchiveFile(file)
+                            ? "Archive file"
+                            : "Only file owner can archive closed files"
+                        }
+                        position="top"
+                        withArrow
+                      >
                         <ActionIcon
                           variant="light"
                           color="blue"
@@ -405,7 +449,7 @@ export default function Inboxfunc() {
                           onMouseEnter={handleMouseEnter}
                           onMouseLeave={handleMouseLeave}
                           onClick={() => openArchiveModal(file)}
-                          disabled={file.uploader !== username}
+                          disabled={!canArchiveFile(file)}
                         >
                           <Archive size="1.5rem" />
                         </ActionIcon>
@@ -430,7 +474,7 @@ export default function Inboxfunc() {
                         height: "36px",
                       }}
                     >
-                      {file.sent_by_user}[{file.sent_by_designation}]
+                      {file.sent_by_user || file.created_by || "-"}[{file.sent_by_designation || file.current_designation || "-"}]
                     </td>
                     <td
                       style={{
@@ -450,7 +494,7 @@ export default function Inboxfunc() {
                         height: "36px",
                       }}
                     >
-                      {convertDate(file.upload_date)}
+                      {convertDate(file.created_at || file.received_at || file.upload_date)}
                     </td>
                     <td
                       style={{
@@ -460,7 +504,7 @@ export default function Inboxfunc() {
                         height: "36px",
                       }}
                     >
-                      {file.uploader}[{file.uploader_designation}]
+                      {file.created_by || file.uploader || "-"}[{file.uploader_designation || "-"}]
                     </td>
                     <td
                       style={{
@@ -498,7 +542,7 @@ export default function Inboxfunc() {
         ) : (
           <Center style={{ height: "200px" }}>
             <Stack align="center" spacing="xs">
-              <FolderNotch size={48} color={theme.colors.gray[5]} />
+              <Folder size={48} color={theme.colors.gray[5]} />
               <Text c="dimmed" size="lg">
                 No files in Inbox!
               </Text>
@@ -526,12 +570,12 @@ export default function Inboxfunc() {
       withBorder
       style={{
         backgroundColor: "#F5F7F8",
-        position: "absolute",
-        height: "70vh",
-        width: "90vw",
+        width: "100%",
+        minHeight: "70vh",
+        maxHeight: "70vh",
         display: "flex",
         flexDirection: "column",
-        overflowY: "auto",
+        overflowY: selectedFile ? "hidden" : "auto",
       }}
     >
       {!selectedFile && (
@@ -566,7 +610,7 @@ export default function Inboxfunc() {
       )}
 
       {selectedFile ? (
-        <div style={{ overflowY: "auto", height: "100%" }}>
+        <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <Title
             order={3}
             mb="md"
@@ -581,6 +625,7 @@ export default function Inboxfunc() {
           <View
             onBack={handleBack}
             fileID={selectedFile.id}
+            contextSource="inbox"
             updateFiles={() =>
               setFiles(files.filter((f) => f.id !== selectedFile.id))
             }
@@ -592,7 +637,7 @@ export default function Inboxfunc() {
             border: "1px solid #ddd",
             borderRadius: "8px",
             overflowY: "auto",
-            height: "calc(57vh - 20px)",
+            height: "100%",
             minHeight: "300px",
             backgroundColor: "#fff",
             display: "flex",
@@ -651,7 +696,7 @@ export default function Inboxfunc() {
                   onChange={(e) => {
                     setPageInput(e.target.value.replace(/[^0-9]/g, ""));
                   }}
-                  onKeyPress={handlePageJump}
+                  onKeyDown={handlePageJump}
                   style={{
                     width: "80px",
                     textAlign: "center",
